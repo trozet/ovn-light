@@ -170,3 +170,44 @@ func TestDOCAOffloadEvidence(t *testing.T) {
 		t.Fatal("invalid partial counter accepted")
 	}
 }
+
+func TestIdenticalPacketLengthBranchesFollowedOnce(t *testing.T) {
+	fs, errs := Parse(`ufid:a, recirc_id(0),in_port(4),ipv4(src=10.0.0.2,dst=10.0.0.3,proto=6),tcp(dst=80), packets:5, actions:check_pkt_len(size=1514,gt(ct(zone=1,nat),recirc(0x2)),le(ct(zone=1,nat),recirc(0x2)))
+ufid:b, recirc_id(0x2),in_port(4),ipv4(proto=6), packets:5, actions:drop`)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if paths := Reconstruct(fs); len(paths) != 1 {
+		t.Fatalf("paths=%d", len(paths))
+	}
+}
+
+func TestHashSelectsANewDPHash(t *testing.T) {
+	fs, errs := Parse(`ufid:a, recirc_id(0),dp_hash(0x1/0xf),in_port(4),ipv4(src=10.0.0.2,dst=10.96.0.10,proto=6),tcp(dst=80), packets:5, actions:hash(l4(0)),recirc(0x3)
+ufid:b, recirc_id(0x3),dp_hash(0x2/0xf),in_port(4),ipv4(proto=6), packets:5, actions:drop`)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	paths := Reconstruct(fs)
+	if len(paths) != 1 || !paths[0].Complete || len(paths[0].Warnings) > 0 {
+		t.Fatalf("%+v", paths)
+	}
+}
+
+func TestVLANPushAndPop(t *testing.T) {
+	fs, errs := Parse(`ufid:a, recirc_id(0),in_port(pod),eth_type(0x0800),ipv4(src=10.0.0.2,dst=10.1.0.3,proto=6), packets:5, actions:push_vlan(vid=10,pcp=0),uplink
+ufid:b, recirc_id(0),in_port(uplink),eth_type(0x8100),vlan(vid=10,pcp=0),encap(eth_type(0x0800),ipv4(src=10.1.0.3,dst=10.0.0.2,proto=6)), packets:5, actions:pop_vlan,pod`)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	paths := ReconstructTraffic(fs, "pod", "uplink")
+	if len(paths) != 2 {
+		t.Fatalf("%+v", paths)
+	}
+	for _, p := range paths {
+		want := map[string]string{"uplink": "10", "pod": ""}[p.Output]
+		if p.Identity["vlan.vid"] != want || len(p.Warnings) > 0 {
+			t.Fatalf("output %s: vlan=%q warnings=%v", p.Output, p.Identity["vlan.vid"], p.Warnings)
+		}
+	}
+}

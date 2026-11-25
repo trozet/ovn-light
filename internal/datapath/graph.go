@@ -3,6 +3,7 @@ package datapath
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -180,6 +181,10 @@ func actionBranches(actions string, depth int) []actionBranch {
 			expanded := append(append([]string{}, parts[:i]...), choice[3:len(choice)-1])
 			expanded = append(expanded, parts[i+1:]...)
 			for _, b := range actionBranches(strings.Join(expanded, ","), depth+1) {
+				// Both outcomes often share the same actions; follow them once.
+				if slices.ContainsFunc(out, func(o actionBranch) bool { return o.actions == b.actions }) {
+					continue
+				}
 				b.conditional = true
 				out = append(out, b)
 				if len(out) >= 16 {
@@ -237,6 +242,17 @@ func transform(match map[string]string, actions string, names map[string]bool) (
 					delete(m, k)
 				}
 				warnings = append(warnings, "Conntrack NAT may translate addresses or ports; only explicit matches after NAT identify the translated tuple.")
+			}
+		case strings.HasPrefix(a, "hash("):
+			// Load-balancer group selection; the next stage matches the new dp_hash.
+			delete(m, "dp_hash")
+		case strings.HasPrefix(a, "push_vlan("):
+			flatten("", "vlan"+a[len("push_vlan"):], m)
+		case a == "pop_vlan":
+			for k := range m {
+				if strings.HasPrefix(k, "vlan.") {
+					delete(m, k)
+				}
 			}
 		case a == "ct_clear":
 			for _, k := range []string{"ct_state", "ct_mark", "ct_label", "ct_zone"} {
