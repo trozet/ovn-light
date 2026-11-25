@@ -94,6 +94,20 @@ go run ./cmd/ovn-light --context kind-ovn --enable-writes --data-dir .data
 
 Print `$OVN_LIGHT_TOKEN` in your own terminal to log in. Omit `--enable-writes` for read-only operation. Use `--kubeconfig /path/to/config` when needed.
 
+When OVN-Kubernetes runs in DPU mode, each host's OVS and OVN databases run
+on its DPU, in a separate DPU cluster. Add that cluster's credentials:
+
+```sh
+go run ./cmd/ovn-light --kubeconfig host.conf --dpu-kubeconfig dpu.conf
+```
+
+The server finds the `ovnkube-controller` pods in the DPU cluster and maps each
+DPU to its host through the `external_ids:host-k8s-nodename` value that
+OVN-Kubernetes sets in the DPU's OVS. Pods, policies and proposals still come
+from the host cluster. DPU collection runs from the server, so it cannot be
+combined with `--daemonset-collectors`. Connection tracing and on-demand
+diagnostics still run against the host cluster and do not reach the DPU yet.
+
 ### Capture and replay
 
 ```sh

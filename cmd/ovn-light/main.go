@@ -63,6 +63,8 @@ func run() error {
 	snapshotFile := fs.String("snapshot", "", "Read a captured snapshot; writes are always disabled")
 	kubeconfig := fs.String("kubeconfig", "", "Kubeconfig file; defaults to in-cluster or normal kubeconfig loading")
 	contextName := fs.String("context", "", "Kubeconfig context")
+	dpuKubeconfig := fs.String("dpu-kubeconfig", "", "Kubeconfig of the DPU cluster when OVN-Kubernetes runs in DPU mode")
+	dpuContext := fs.String("dpu-context", "", "Kubeconfig context of the DPU cluster")
 	namespace := fs.String("ovn-namespace", "ovn-kubernetes", "Namespace containing existing OVN and OVS pods")
 	nbdb := fs.String("nb-db", "unix:/var/run/ovn/ovnnb_db.sock", "OVN NB database address accessible inside the controller container")
 	sbdb := fs.String("sb-db", "unix:/var/run/ovn/ovnsb_db.sock", "OVN SB database address accessible inside the controller container")
@@ -97,6 +99,10 @@ func run() error {
 	}
 	if _, err := labels.Parse(*nodeSelector); err != nil {
 		return fmt.Errorf("invalid collection-node-selector: %w", err)
+	}
+	dpu := *dpuKubeconfig != "" || *dpuContext != ""
+	if dpu && *distributed {
+		return fmt.Errorf("DPU collection runs from the server; it cannot be combined with --daemonset-collectors")
 	}
 	if *concurrency < 1 || *concurrency > 16 {
 		return fmt.Errorf("collection-concurrency must be 1–16")
@@ -139,6 +145,11 @@ func run() error {
 			return err
 		}
 		collector = &kube.Collector{NodeSelector: *nodeSelector, RoutingEnabled: true, Client: client, Namespace: *namespace, NBDB: *nbdb, SBDB: *sbdb, MaxDetraces: *maxDetraces, Concurrency: *concurrency, CacheTTL: *metadataTTL}
+		if dpu {
+			if collector.DPU, err = kube.New(*dpuKubeconfig, *dpuContext); err != nil {
+				return err
+			}
+		}
 	}
 	if command == "capture" {
 		if collector != nil {

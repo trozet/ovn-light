@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/trozet/ovn-light/internal/datapath"
 	"github.com/trozet/ovn-light/internal/model"
 	"github.com/trozet/ovn-light/internal/ovn"
+	core "k8s.io/api/core/v1"
+	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -21,6 +24,7 @@ type Collector struct {
 	Hub                   *Hub
 	local                 bool
 	Client                *Client
+	DPU                   *Client
 	RoutingEnabled        bool
 	routingCache          map[string]routingCache
 	Namespace, NBDB, SBDB string
@@ -34,7 +38,10 @@ type Collector struct {
 	offloadCache          map[string]offloadCache
 	exec                  func(context.Context, Target, []string) (string, error)
 }
-type nodeTargets struct{ ovs, ovn, frr Target }
+type nodeTargets struct {
+	ovs, ovn, frr Target
+	client        *Client // the cluster running the targets, if not Client
+}
 
 type traceCache struct{ Signature, Text string }
 type nodeCache struct {
@@ -155,6 +162,17 @@ func (c *Collector) Capture(ctx context.Context) (model.Snapshot, error) {
 		}
 		targets[p.Spec.NodeName] = t
 	}
+	if c.DPU != nil {
+		dpus, errs := c.dpuTargets(ctx)
+		for host, t := range dpus {
+			if selected[host] {
+				targets[host] = t
+			}
+		}
+		if len(errs) > 0 {
+			s.Inventory.DiagnosticErrors["dpuCollection"] = strings.Join(errs, "; ")
+		}
+	}
 	if c.RoutingEnabled {
 		for node, frr := range discoverFRR(inv) {
 			if t, ok := targets[node]; ok {
@@ -250,6 +268,7 @@ func (c *Collector) captureNode(ctx context.Context, name string, t nodeTargets,
 	ctx, cancelNode := context.WithTimeout(ctx, 90*time.Second)
 	defer cancelNode()
 	n = model.NodeSnapshot{Name: name, CapturedAt: time.Now().UTC(), Detraces: map[string]string{}}
+	vswitchd := ""
 	execute := func(target Target, args ...string) (string, error) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -265,12 +284,19 @@ func (c *Collector) captureNode(ctx context.Context, name string, t nodeTargets,
 		var out string
 		var err error
 		n.Collection.Commands++
+		if vswitchd != "" && namesVswitchd(args) {
+			args = append([]string{}, args...)
+			args[2] = vswitchd
+		}
+		limit := min(8<<20, (24<<20)-n.Collection.Bytes)
 		if c.local {
-			out, err = localExec(call, args, min(8<<20, (24<<20)-n.Collection.Bytes))
-		} else if c.exec != nil {
-			out, err = c.exec(call, target, args)
+			out, err = localExec(call, args, limit)
 		} else {
-			out, err = c.Client.execBounded(call, target, args, nil, min(8<<20, (24<<20)-n.Collection.Bytes))
+			client := c.Client
+			if t.client != nil {
+				client = t.client
+			}
+			out, err = c.execOn(call, client, target, args, limit)
 		}
 		n.Collection.Bytes += len(out)
 		return out, err
@@ -284,7 +310,12 @@ func (c *Collector) captureNode(ctx context.Context, name string, t nodeTargets,
 	}
 
 	if t.ovs.Pod == "" {
+		// OVS runs outside this pod's PID namespace, so ovs-appctl cannot
+		// validate the pidfile. Address the control socket directly.
 		t.ovs = t.ovn
+		if !c.local && t.ovs.Pod != "" {
+			vswitchd, _ = vswitchdControl(run(t.ovs, "cat", "/var/run/openvswitch/ovs-vswitchd.pid"))
+		}
 	}
 	if t.ovn.Pod == "" {
 		n.Errors = append(n.Errors, "No ovnkube-controller container; ACL attribution is unavailable.")
@@ -453,4 +484,41 @@ func (c *Collector) captureNode(ctx context.Context, name string, t nodeTargets,
 		n.Routing = c.captureRouting(name, t, execute)
 	}
 	return n
+}
+
+func (c *Collector) execOn(ctx context.Context, client *Client, t Target, args []string, limit int) (string, error) {
+	if c.exec != nil {
+		return c.exec(ctx, t, args)
+	}
+	return client.execBounded(ctx, t, args, nil, limit)
+}
+
+// dpuTargets maps each host node to the ovnkube-node pod on its DPU, using the
+// host name that OVN-Kubernetes records in the DPU's Open_vSwitch table.
+func (c *Collector) dpuTargets(ctx context.Context) (map[string]nodeTargets, []string) {
+	pods, err := c.DPU.Core.CoreV1().Pods(c.Namespace).List(ctx, meta.ListOptions{})
+	if err != nil {
+		return nil, []string{"list DPU pods: " + shortError(err)}
+	}
+	out := map[string]nodeTargets{}
+	var errs []string
+	for _, p := range pods.Items {
+		if p.DeletionTimestamp != nil || p.Status.Phase != core.PodRunning || !slices.ContainsFunc(p.Spec.Containers, func(c core.Container) bool { return c.Name == "ovnkube-controller" }) {
+			continue
+		}
+		target := Target{p.Namespace, p.Name, "ovnkube-controller"}
+		call, cancel := context.WithTimeout(ctx, 15*time.Second)
+		raw, err := c.execOn(call, c.DPU, target, []string{"ovs-vsctl", "--timeout=10", "get", "Open_vSwitch", ".", "external_ids:host-k8s-nodename"}, 4096)
+		cancel()
+		host := strings.Trim(strings.TrimSpace(raw), `"`)
+		switch {
+		case err != nil:
+			errs = append(errs, p.Spec.NodeName+": "+shortError(err))
+		case out[host].ovn.Pod != "":
+			errs = append(errs, fmt.Sprintf("%s: host %s is also served by %s", p.Spec.NodeName, host, out[host].ovn.Pod))
+		default:
+			out[host] = nodeTargets{ovn: target, client: c.DPU}
+		}
+	}
+	return out, errs
 }

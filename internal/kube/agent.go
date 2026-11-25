@@ -29,17 +29,17 @@ const collectorURL = "https://ovn-light.ovn-light.svc:8443/v1/collection"
 func localExec(ctx context.Context, args []string, limit int) (string, error) {
 	// Named appctl targets open their pidfile read-write to check the lock.
 	// Use the daemon's socket directly so its runtime directory stays read-only.
-	if len(args) >= 3 && args[0] == "ovs-appctl" && args[1] == "-t" && args[2] == "ovs-vswitchd" {
+	if namesVswitchd(args) {
 		raw, err := os.ReadFile("/var/run/openvswitch/ovs-vswitchd.pid")
 		if err != nil {
 			return "", err
 		}
-		pid, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 32)
-		if err != nil || pid == 0 {
-			return "", fmt.Errorf("invalid ovs-vswitchd pidfile")
+		ctl, err := vswitchdControl(string(raw))
+		if err != nil {
+			return "", err
 		}
 		args = append([]string{}, args...)
-		args[2] = fmt.Sprintf("/var/run/openvswitch/ovs-vswitchd.%d.ctl", pid)
+		args[2] = ctl
 	}
 	out, stderr := limitedBuffer{remaining: limit}, limitedBuffer{remaining: 4096}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
@@ -48,6 +48,18 @@ func localExec(ctx context.Context, args []string, limit int) (string, error) {
 		return "", fmt.Errorf("%s: %w: %s", args[0], err, stderr.String())
 	}
 	return out.String(), nil
+}
+
+func namesVswitchd(args []string) bool {
+	return len(args) >= 3 && args[0] == "ovs-appctl" && args[1] == "-t" && args[2] == "ovs-vswitchd"
+}
+
+func vswitchdControl(pidfile string) (string, error) {
+	pid, err := strconv.ParseUint(strings.TrimSpace(pidfile), 10, 32)
+	if err != nil || pid == 0 {
+		return "", fmt.Errorf("invalid ovs-vswitchd pidfile")
+	}
+	return fmt.Sprintf("/var/run/openvswitch/ovs-vswitchd.%d.ctl", pid), nil
 }
 
 type agent struct {

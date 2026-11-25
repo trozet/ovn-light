@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"github.com/trozet/ovn-light/internal/offload"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,16 @@ func TestOffloadStaleLiveEvidence(t *testing.T) {
 		if p.Status != "unknown" || p.Issue {
 			t.Fatal(p)
 		}
+	}
+}
+
+func TestDPUCollectionErrorsAreShown(t *testing.T) {
+	a, _ := New("live", "", nil, nil, false)
+	s := Demo()
+	s.Inventory.DiagnosticErrors = map[string]string{"dpuCollection": "dpu0: no such key"}
+	a.Load(s)
+	if !slices.Contains(a.State().Errors, "dpu0: no such key") {
+		t.Fatal(a.State().Errors)
 	}
 }
 
