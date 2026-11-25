@@ -55,6 +55,23 @@ kubectl --context kind-ovn -n ovn-light get secret ovn-light-auth \
 
 The deployment enables reviewed writes. To run read only, remove `--enable-writes`, the `create`/`delete` verbs for NetworkPolicy, MultiNetworkPolicy and ClusterNetworkConnect, and the `patch` verb for EgressFirewall in `deploy/ovn-light.yaml`. The server uses `pods/exec` for on-demand diagnostics and optional FRR inspection. The DaemonSet has its own service account and reads local OVS sockets.
 
+On another cluster, push the image to a registry its nodes can pull from, with a
+new tag for each build, and deploy with `scripts/deploy.sh`:
+
+```sh
+IMAGE=registry.example.com/ovn-light:v1 ./scripts/deploy.sh my-context
+```
+
+When OVN-Kubernetes runs in DPU mode, also pass the DPU cluster's kubeconfig.
+The script applies `deploy/dpu-cluster.yaml` there: a service account with a
+long-lived token that may list pods and use `pods/exec` in `ovn-kubernetes`.
+The server then collects from each DPU instead of running node agents. The API
+address in that kubeconfig must be reachable from host-cluster pods.
+
+```sh
+DPU_KUBECONFIG=dpu.conf IMAGE=registry.example.com/ovn-light:v1 ./scripts/deploy.sh my-context
+```
+
 ### Generate a denied connection
 
 ```sh
@@ -93,6 +110,20 @@ go run ./cmd/ovn-light --context kind-ovn --enable-writes --data-dir .data
 ```
 
 Print `$OVN_LIGHT_TOKEN` in your own terminal to log in. Omit `--enable-writes` for read-only operation. Use `--kubeconfig /path/to/config` when needed.
+
+When OVN-Kubernetes runs in DPU mode, each host's OVS and OVN databases run
+on its DPU, in a separate DPU cluster. Add that cluster's credentials:
+
+```sh
+go run ./cmd/ovn-light --kubeconfig host.conf --dpu-kubeconfig dpu.conf
+```
+
+The server finds the `ovnkube-controller` pods in the DPU cluster and maps each
+DPU to its host through the `external_ids:host-k8s-nodename` value that
+OVN-Kubernetes sets in the DPU's OVS. Pods, policies and proposals still come
+from the host cluster. DPU collection runs from the server, so it cannot be
+combined with `--daemonset-collectors`. Connection tracing and on-demand
+diagnostics still run against the host cluster and do not reach the DPU yet.
 
 ### Capture and replay
 

@@ -99,8 +99,10 @@ func (a *App) Load(s model.Snapshot) {
 	}
 	a.mu.RUnlock()
 	v := ovn.Analyze(s, previous)
-	if scope := s.Inventory.DiagnosticErrors["collectionScope"]; scope != "" {
-		v.Errors = append(v.Errors, scope)
+	for _, key := range []string{"collectionScope", "dpuCollection"} {
+		if message := s.Inventory.DiagnosticErrors[key]; message != "" {
+			v.Errors = append(v.Errors, message)
+		}
 	}
 	report := routing.Analyze(s, v, &a.routing)
 	qosReport := qos.Analyze(s)

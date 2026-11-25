@@ -1,0 +1,51 @@
+# Apply to the DPU cluster when OVN-Kubernetes runs in DPU mode. The OVN-Light
+# server in the host cluster uses this account to find the ovnkube-node pods on
+# each DPU and run its read-only OVS and OVN commands there.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ovn-light
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ovn-light
+  namespace: ovn-light
+---
+# A long-lived token: the server reads it from another cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ovn-light-token
+  namespace: ovn-light
+  annotations:
+    kubernetes.io/service-account.name: ovn-light
+type: kubernetes.io/service-account-token
+---
+# Read-only OVS commands still require a powerful pods/exec permission.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ovn-light-collector
+  namespace: ovn-kubernetes
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [list]
+- apiGroups: [""]
+  resources: [pods/exec]
+  verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ovn-light-collector
+  namespace: ovn-kubernetes
+subjects:
+- kind: ServiceAccount
+  name: ovn-light
+  namespace: ovn-light
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ovn-light-collector

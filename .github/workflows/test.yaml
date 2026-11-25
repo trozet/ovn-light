@@ -20,7 +20,7 @@ jobs:
     - run: make test check build
     - name: Check test scripts
       run: |
-        shellcheck -x scripts/ci/*.sh scripts/deploy-kind.sh
+        shellcheck -x scripts/ci/*.sh scripts/deploy.sh scripts/deploy-kind.sh
         python3 -m py_compile scripts/*.py
         python3 -m unittest discover -s scripts -p 'test_*.py'
     - name: Install browser test dependencies
